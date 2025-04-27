@@ -19,8 +19,9 @@ import (
 )
 
 var (
-	queueData []*payload.Queue
-	m         sync.Mutex
+	queueData    []*payload.Queue
+	m            sync.Mutex
+	finishedTask = make(chan string)
 )
 
 // As this is a simple app, we dont need to create complex structure.
@@ -135,7 +136,10 @@ func execQueue() {
 	}
 	foundData.ProcessedAt = &now
 	m.Unlock()
-	log.Printf("Successfully process queue %v with status %v", foundData.ID, foundData.Status)
+	msg := fmt.Sprintf("Successfully process queue %v with status %v", foundData.ID, foundData.Status)
+
+	log.Println(msg)
+	finishedTask <- msg
 }
 
 func retryQueue(filter payload.QueueRetry) error {
@@ -229,5 +233,33 @@ func initRoute(e *echo.Echo) {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"msg": "successfully retry queue",
 		})
+	})
+
+	e.GET("/queue/events", func(c echo.Context) error {
+		log.Printf("SSE client connected, ip : %v", c.RealIP())
+
+		w := c.Response()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		for {
+			select {
+			case <-c.Request().Context().Done():
+				log.Printf("Client is disconnected %v", c.RealIP())
+				return nil
+			case msg := <-finishedTask:
+				eventData := fmt.Sprintf("data: %s\n\n", msg)
+				_, err := w.Write([]byte(eventData))
+
+				if err != nil {
+					log.Printf("err on writer %v", err)
+					return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+				}
+
+				log.Println("Sending Event task finished")
+				w.Flush()
+			}
+		}
 	})
 }
